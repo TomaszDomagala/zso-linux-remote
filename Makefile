@@ -4,21 +4,33 @@ ROOT_DIR=$(shell pwd)
 LINUX_DIR=source
 LINUX_VERSION=linux-5.16.5
 
+COMPILE_MACHINE=gorczewska-laptop
+COMPILE_TMP_DIR=/tmp/linux-remote-compile-1
+
 .PHONY: copy-config
 copy-config: ## copy config to linux dir
 	@echo "Copying config files..."
 	@cp $(ROOT_DIR)/config $(ROOT_DIR)/$(LINUX_DIR)/.config
 	@cd $(ROOT_DIR)/$(LINUX_DIR) && make oldconfig
 
-.PHONY: compile-kernel
-compile-kernel: ## compile kernel
+.PHONY: compile-kernel-local
+compile-kernel-local: ## compile kernel locally
 	@echo "Compiling kernel..."
 	@cd $(ROOT_DIR)/$(LINUX_DIR) && make -j8
+
+.PHONY: compile-kernel-remote
+compile-kernel-remote: ## compile kernel remotely
+	@echo "=> Copying kernel source to remote machine..."
+	@rsync -azr -rsh=ssh $(ROOT_DIR)/config $(ROOT_DIR)/Makefile $(ROOT_DIR)/$(LINUX_DIR) $(COMPILE_MACHINE):$(COMPILE_TMP_DIR)/
+	@echo "=> Compiling kernel on remote machine..."
+	@ssh $(COMPILE_MACHINE) "cd $(COMPILE_TMP_DIR) && make copy-config && make compile-kernel-local"
+	@echo "=> Copying compiled kernel to local machine..."
+	@rsync -azr -rsh=ssh $(COMPILE_MACHINE):$(COMPILE_TMP_DIR)/ $(COMPILE_TMP_DIR)/
 
 .PHONY: upload-kernel
 upload-kernel: ## copies kernel to the vm
 	@echo "Uploading kernel to the vm..."
-	@rsync -arvz -rsh=ssh -e 'ssh -p 2222' $(LINUX_DIR) root@localhost:/root
+	@rsync -arz -rsh=ssh -e 'ssh -p 2222' $(COMPILE_TMP_DIR)/$(LINUX_DIR) root@localhost:/root/
 
 .PHONY: install-kernel
 install-kernel: ## installs kernel on the vm
@@ -52,12 +64,16 @@ linux.patch:
 
 .PHONY: deploy
 deploy: ## compile, upload and install kernel
-	@make compile-kernel
+	@echo "=> Compiling kernel..."
+	@make compile-kernel-remote
+	@echo "=> Uploading kernel to the vm..."
 	@make upload-kernel
+	@echo "=> Installing kernel on the vm..."
 	@make install-kernel
-	@echo "Rebooting vm after timeout..."
+	@echo "=> Rebooting vm after timeout..."
 	-@ssh -p 2222 root@localhost reboot
-	@sleep 7s
+	@sleep 15s
+	@echo "=> Testing kernel..."
 	@make test-kernel
 
 .PHONY: clean
